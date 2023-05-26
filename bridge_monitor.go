@@ -66,7 +66,7 @@ var ETH_TOKEN_LIST = []Token{
 		Symbol:  "USDC",
 	},
 	{
-		Address: common.HexToAddress("0xa103f20367b18D004710141Ff505A6B63CE6885C"),
+		Address: common.HexToAddress("0x6982508145454ce325ddbe47a25d4ec3d2311933"),
 		Decimal: 18,
 		Symbol:  "PEPE",
 	},
@@ -123,8 +123,8 @@ func main() {
 
 	// init cron job
 	c := cron.New()
-	c.AddFunc("@every 0h2m", func() {
-		lastETHBlock, lastTCBlock, err = process(
+	c.AddFunc("@every 0h1m", func() {
+		tempETHBlock, tempTCBlock, err := process(
 			stepper,
 			clientETH,
 			lastETHBlock,
@@ -133,6 +133,9 @@ func main() {
 		)
 		if err != nil {
 			fmt.Println(err.Error())
+		} else {
+			lastTCBlock = tempTCBlock
+			lastETHBlock = tempETHBlock
 		}
 	})
 	c.Start()
@@ -184,7 +187,7 @@ func process(
 		if v.Address != ETH_ADDRESS {
 			erc20Inst, _ := erc20.NewErc20(v.Address, eClient)
 			baln, _ := erc20Inst.BalanceOf(nil, ETH_BRIDGE_ADDRESS)
-			fmt.Printf("Balance %s %s", baln.String(), v.Symbol)
+			fmt.Printf("Balance %s %s \n", baln.String(), v.Symbol)
 		} else {
 			ethBal, _ := eClient.BalanceAt(context.Background(), ETH_BRIDGE_ADDRESS, nil)
 			fmt.Printf("Balance %s %s \n", ethBal.String(), "ETH")
@@ -192,7 +195,7 @@ func process(
 	}
 
 	for _, v := range TC_TOKEN_LIST {
-		erc20Inst, _ := erc20.NewErc20(v.Address, eClient)
+		erc20Inst, _ := erc20.NewErc20(v.Address, tcClient)
 		baln, _ := erc20Inst.TotalSupply(nil)
 		fmt.Printf("Balance %s %s \n", baln.String(), v.Symbol)
 	}
@@ -291,7 +294,7 @@ func scanETHBridge(gap int, startBlockETH int, ethBlockLatest int, eClient *ethc
 }
 
 func addToken(list []Token, token common.Address, client *ethclient.Client) []Token {
-	if !isContains(ETH_TOKEN_LIST, token) {
+	if !isContains(list, token) {
 		erc20Inst, _ := erc20.NewErc20(token, client)
 		tokenDec, _ := erc20Inst.Decimals(nil)
 		tokenSymbol, _ := erc20Inst.Symbol(nil)
