@@ -121,9 +121,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// init cron job
-	c := cron.New()
-	c.AddFunc("@every 0h1m", func() {
+	scan := func() {
 		tempETHBlock, tempTCBlock, err := process(
 			stepper,
 			clientETH,
@@ -137,7 +135,11 @@ func main() {
 			lastTCBlock = tempTCBlock
 			lastETHBlock = tempETHBlock
 		}
-	})
+	}
+	scan()
+	// init cron job
+	c := cron.New()
+	c.AddFunc("@every 0h10m", scan)
 	c.Start()
 
 	messages := make(chan string)
@@ -199,6 +201,7 @@ func process(
 		baln, _ := erc20Inst.TotalSupply(nil)
 		fmt.Printf("Balance %s %s \n", baln.String(), v.Symbol)
 	}
+	fmt.Println("----------------------------------------------------------------")
 
 	return int(latestHeightETH), int(latestHeightTC), nil
 }
