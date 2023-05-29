@@ -3,6 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
+	"math/big"
+	"math"
+	"os"
+	"strings"
+
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
@@ -11,10 +17,8 @@ import (
 	"github.com/tc_bridge/bridgeETH"
 	"github.com/tc_bridge/bridgeTC"
 	"github.com/tc_bridge/erc20"
+	"github.com/tc_bridge/slack"
 	cron "gopkg.in/robfig/cron.v2"
-	"log"
-	"math/big"
-	"strings"
 )
 
 // tc section
@@ -49,8 +53,8 @@ type WithdrawMultiToken struct {
 	Amounts    []*big.Int
 }
 
-var ethTokens = make(map[common.Address]bool)
-var tcTokens = make(map[common.Address]bool)
+var ethTokens = make(map[common.Address]*Token)
+var tcTokens = make(map[common.Address]*Token)
 
 type Token struct {
 	Address common.Address
@@ -103,14 +107,40 @@ var TC_TOKEN_LIST = []Token{
 var ETH_BRIDGE_ADDRESS = common.HexToAddress("0xa103f20367b18d004710141ff505a6b63ce6885c")
 var ETH_ADDRESS = common.HexToAddress("0x0000000000000000000000000000000000000000")
 
+var slackInst *slack.Slack
+
 func main() {
 	//todo: load last block from file/DB
 	var lastETHBlock = 17344391
 	var lastTCBlock = 9260
 	var stepper = 500
 
-	// load list tokens
+	// populate data to map structure
+	for _, v := range ETH_TOKEN_LIST {
+		ethTokens[v.Address] = &Token{
+			Address: v.Address,
+			Decimal: v.Decimal,
+			Symbol: v.Symbol,
+		}
+	}
 
+	for _, v := range TC_TOKEN_LIST {
+		tcTokens[v.Address] = &Token{
+			Address: v.Address,
+			Decimal: v.Decimal,
+			Symbol: v.Symbol,
+		}
+	}
+
+	slackConfig := slack.Config{
+		Token:     os.Getenv("SLACK_TOKEN"),
+		ChannelId: os.Getenv("SLACK_CHANNEL_ID"),
+		Env:       os.Getenv("ENV"),
+	}
+
+	slackInst = slack.NewSlack(slackConfig)
+
+	// load list tokens
 	clientETH, err := ethclient.Dial("https://mainnet.infura.io/v3/9ef9bfbcb8a74ad48d473c2036b999a1")
 	if err != nil {
 		log.Fatal(err)
@@ -166,10 +196,6 @@ func process(
 	if err != nil {
 		return 0, 0, err
 	}
-	fmt.Println("deposit eth bridge")
-	fmt.Println(totalDepositETH)
-	fmt.Println("withdraw eth bridge")
-	fmt.Println(totalWithdrawETH)
 
 	latestHeightTC, err := tcClient.BlockNumber(context.Background())
 	if err != nil {
@@ -179,29 +205,22 @@ func process(
 	if err != nil {
 		return 0, 0, err
 	}
-	fmt.Println("mint tc bridge")
-	fmt.Println(totalDepositTC)
-	fmt.Println("withdraw tc bridge")
-	fmt.Println(totalWithdrawTC)
 
+	var result string
+	// notify to slack 12h mint burn
+	result += formatOutput(totalDepositETH, totalWithdrawETH, "eth", ethTokens)
+	result += formatOutput(totalDepositTC, totalWithdrawTC, "tc", tcTokens)
+
+	result += "\n"
 	// query balances
-	for _, v := range ETH_TOKEN_LIST {
-		if v.Address != ETH_ADDRESS {
-			erc20Inst, _ := erc20.NewErc20(v.Address, eClient)
-			baln, _ := erc20Inst.BalanceOf(nil, ETH_BRIDGE_ADDRESS)
-			fmt.Printf("Balance %s %s \n", baln.String(), v.Symbol)
-		} else {
-			ethBal, _ := eClient.BalanceAt(context.Background(), ETH_BRIDGE_ADDRESS, nil)
-			fmt.Printf("Balance %s %s \n", ethBal.String(), "ETH")
-		}
-	}
+	result += formatOuputBalances("eth", ethTokens, eClient, ETH_BRIDGE_ADDRESS)
+	result += formatOuputBalances("tc", tcTokens, tcClient, common.Address{})
 
-	for _, v := range TC_TOKEN_LIST {
-		erc20Inst, _ := erc20.NewErc20(v.Address, tcClient)
-		baln, _ := erc20Inst.TotalSupply(nil)
-		fmt.Printf("Balance %s %s \n", baln.String(), v.Symbol)
+	channelID := "" // todo
+	if _, _, err := slackInst.SendMessageToSlackWithChannel(channelID, "Bridge monitor", "Process", result); err != nil {
+		fmt.Println("slackInst.SendMessageToSlackWithChannel err", err)
+		return 0, 0, err
 	}
-	fmt.Println("----------------------------------------------------------------")
 
 	return int(latestHeightETH), int(latestHeightTC), nil
 }
@@ -279,8 +298,8 @@ func scanETHBridge(gap int, startBlockETH int, ethBlockLatest int, eClient *ethc
 		} else {
 			totalDepositETH[v.Token] = v.Amount
 		}
-		if v.Token != ETH_ADDRESS {
-			ETH_TOKEN_LIST = addToken(ETH_TOKEN_LIST, v.Token, eClient)
+		if v.Token != ETH_ADDRESS && ethTokens[v.Token] == nil {
+			ethTokens[v.Token] = addToken(v.Token, eClient)
 		}
 	}
 	for _, v := range withdrawEvents {
@@ -296,29 +315,16 @@ func scanETHBridge(gap int, startBlockETH int, ethBlockLatest int, eClient *ethc
 	return totalDepositETH, totalWithdrawETH, nil
 }
 
-func addToken(list []Token, token common.Address, client *ethclient.Client) []Token {
-	if !isContains(list, token) {
-		erc20Inst, _ := erc20.NewErc20(token, client)
-		tokenDec, _ := erc20Inst.Decimals(nil)
-		tokenSymbol, _ := erc20Inst.Symbol(nil)
-		list = append(list, Token{
-			Address: token,
-			Decimal: int(tokenDec.Uint64()),
-			Symbol:  tokenSymbol,
-		})
+func addToken(token common.Address, client *ethclient.Client) *Token {
+	erc20Inst, _ := erc20.NewErc20(token, client)
+	tokenDec, _ := erc20Inst.Decimals(nil)
+	tokenSymbol, _ := erc20Inst.Symbol(nil)
+
+	return &Token{
+		Address: token,
+		Decimal: int(tokenDec.Uint64()),
+		Symbol:  tokenSymbol,
 	}
-
-	return list
-}
-
-func isContains(list []Token, newToken common.Address) bool {
-	for _, v := range list {
-		if v.Address == newToken {
-			return true
-		}
-	}
-
-	return false
 }
 
 func scanTCBridge(gap int, startBlockTC int, tcBlockLatest int, tcClient *ethclient.Client) (map[common.Address]*big.Int, map[common.Address]*big.Int, error) {
@@ -408,7 +414,9 @@ func scanTCBridge(gap int, startBlockTC int, tcBlockLatest int, tcClient *ethcli
 				totalDepositETH[v.Token] = v2
 			}
 		}
-		TC_TOKEN_LIST = addToken(TC_TOKEN_LIST, v.Token, tcClient)
+		if tcTokens[v.Token] == nil {
+			tcTokens[v.Token] = addToken(v.Token, tcClient)
+		}
 	}
 
 	for _, v := range mint0Events {
@@ -418,9 +426,76 @@ func scanTCBridge(gap int, startBlockTC int, tcBlockLatest int, tcClient *ethcli
 			} else {
 				totalDepositETH[v.Tokens[i]] = v2
 			}
-			TC_TOKEN_LIST = addToken(TC_TOKEN_LIST, v.Tokens[i], tcClient)
+			if tcTokens[v.Tokens[i]] == nil {
+				tcTokens[v.Tokens[i]] = addToken(v.Tokens[i], tcClient)
+			}
 		}
 	}
 
 	return totalDepositETH, totalWithdrawETH, nil
+}
+
+func formatOutput(deposits map[common.Address]*big.Int, withdraws map[common.Address]*big.Int, prefix string, tokenList map[common.Address]*Token) string {
+	var notifyMintBurn string 
+	if prefix == "eth" {
+		notifyMintBurn = "\nETHEREUM BRIDGE \n"
+	} else if prefix == "tc" {
+		notifyMintBurn = "\nTC BRIDGE \n"
+	} else {
+		panic("invalid prefix")
+	}
+	notifyMintBurn += "Deposit Volume: \n"
+	if len(deposits) > 0 {
+		for a, v := range deposits {
+			temp1, _ := big.NewFloat(0).SetString(v.String())
+			temp := big.NewFloat(0).Quo(temp1, big.NewFloat(math.Pow(10, float64(tokenList[a].Decimal))))
+			notifyMintBurn += fmt.Sprintf("%v %v \n", temp.Text('f', 4), tokenList[a].Symbol)
+		}
+	} else {
+		notifyMintBurn += "$0\n"
+	}
+	notifyMintBurn += "Withdraw Volume: \n"
+	if len(withdraws) > 0 {
+		for a, v := range withdraws {
+			temp1, _ := big.NewFloat(0).SetString(v.String())
+			temp := big.NewFloat(0).Quo(temp1, big.NewFloat(math.Pow(10, float64(tokenList[a].Decimal))))
+			notifyMintBurn += fmt.Sprintf("%v %v \n", temp.Text('f', 4), tokenList[a].Symbol)
+		}
+	} else {
+		notifyMintBurn += "$0\n"
+	}
+
+	return notifyMintBurn
+}
+
+func formatOuputBalances(prefix string, tokenList map[common.Address]*Token, clientInst *ethclient.Client, contractAddr common.Address) string {
+	var notifyBalances string 
+	if prefix == "eth" {
+		notifyBalances = "\nETHEREUM BRIDGE BALANCES \n"
+	} else if prefix == "tc" {
+		notifyBalances = "\nTC BRIDGE BALANCES \n"
+	} else {
+		panic("invalid prefix")
+	}
+
+	for _, v := range tokenList {
+		var bal *big.Int
+		if prefix == "eth" {
+			if v.Address != ETH_ADDRESS {
+				erc20Inst, _ := erc20.NewErc20(v.Address, clientInst)
+				bal, _ = erc20Inst.BalanceOf(nil, contractAddr)
+				
+			} else {
+				bal, _ = clientInst.BalanceAt(context.Background(), contractAddr, nil)
+			}
+		} else {
+			erc20Inst, _ := erc20.NewErc20(v.Address, clientInst)
+			bal, _ = erc20Inst.TotalSupply(nil)
+		}
+		temp1, _ := big.NewFloat(0).SetString(bal.String())
+		temp := big.NewFloat(0).Quo(temp1, big.NewFloat(math.Pow(10, float64(v.Decimal))))
+		notifyBalances += fmt.Sprintf("%s %s \n", temp.Text('f', 4), v.Symbol)
+	}
+
+	return notifyBalances
 }
