@@ -216,7 +216,7 @@ func process(
 	result += formatOuputBalances("eth", ethTokens, eClient, ETH_BRIDGE_ADDRESS)
 	result += formatOuputBalances("tc", tcTokens, tcClient, common.Address{})
 
-	channelID := "" // todo
+	channelID := os.Getenv("SLACK_CHANNEL_ID") // todo
 	if _, _, err := slackInst.SendMessageToSlackWithChannel(channelID, "Bridge monitor", "Process", result); err != nil {
 		fmt.Println("slackInst.SendMessageToSlackWithChannel err", err)
 		return 0, 0, err
