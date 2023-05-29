@@ -111,8 +111,8 @@ var slackInst *slack.Slack
 
 func main() {
 	//todo: load last block from file/DB
-	var lastETHBlock = 17344391
-	var lastTCBlock = 9260
+	var lastETHBlock = 0
+	var lastTCBlock = 0
 	var stepper = 500
 
 	// populate data to map structure
@@ -162,20 +162,19 @@ func main() {
 		if err != nil {
 			fmt.Println(err.Error())
 		} else {
-			lastTCBlock = tempTCBlock
-			lastETHBlock = tempETHBlock
+			lastTCBlock = tempTCBlock + 1
+			lastETHBlock = tempETHBlock + 1
 		}
 	}
-	scan()
 	// init cron job
 	c := cron.New()
-	c.AddFunc("@every 0h10m", scan)
+	c.AddFunc("0 0 9 * * *", scan)
+	c.AddFunc("0 0 21 * * *", scan)
 	c.Start()
 
 	messages := make(chan string)
 	<-messages
 
-	//c.AddFunc("@daily", func() { fmt.Println("Every day") })
 	defer c.Stop()
 	defer clientTC.Close()
 	defer clientETH.Close()
@@ -192,6 +191,10 @@ func process(
 	if err != nil {
 		return 0, 0, err
 	}
+	// handle last block height = 0
+	if lastETHBlock == 0 {
+		lastETHBlock = int(latestHeightETH) - 3600 // 3600 ~ 12hours  
+	}
 	totalDepositETH, totalWithdrawETH, err := scanETHBridge(stepper, lastETHBlock, int(latestHeightETH), eClient)
 	if err != nil {
 		return 0, 0, err
@@ -201,6 +204,11 @@ func process(
 	if err != nil {
 		return 0, 0, err
 	}
+	// handle last block height = 0
+	if lastTCBlock == 0 {
+		lastTCBlock = int(latestHeightTC) - 72 // 72 ~ 12hours  
+	}
+
 	totalDepositTC, totalWithdrawTC, err := scanTCBridge(stepper, lastTCBlock, int(latestHeightTC), tcClient)
 	if err != nil {
 		return 0, 0, err
@@ -241,6 +249,9 @@ func scanETHBridge(gap int, startBlockETH int, ethBlockLatest int, eClient *ethc
 		endBlock += gap
 		if endBlock > ethBlockLatest {
 			endBlock = ethBlockLatest
+		}
+		if startBlockETH > endBlock {
+			break
 		}
 		query := ethereum.FilterQuery{
 			FromBlock: big.NewInt(int64(startBlockETH)),
@@ -342,6 +353,9 @@ func scanTCBridge(gap int, startBlockTC int, tcBlockLatest int, tcClient *ethcli
 		endBlockTC += gap
 		if endBlockTC > tcBlockLatest {
 			endBlockTC = tcBlockLatest
+		}
+		if startBlockTC > endBlockTC {
+			break
 		}
 		query := ethereum.FilterQuery{
 			FromBlock: big.NewInt(int64(startBlockTC)),
