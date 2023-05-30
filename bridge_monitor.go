@@ -167,6 +167,7 @@ func main() {
 		}
 	}
 	// init cron job
+	scan()
 	c := cron.New()
 	c.AddFunc("0 0 9 * * *", scan)
 	c.AddFunc("0 0 21 * * *", scan)
@@ -206,7 +207,7 @@ func process(
 	}
 	// handle last block height = 0
 	if lastTCBlock == 0 {
-		lastTCBlock = int(latestHeightTC) - 72 // 72 ~ 12hours  
+		lastTCBlock = int(latestHeightTC) -  84 // 84 ~ 14hours  
 	}
 
 	totalDepositTC, totalWithdrawTC, err := scanTCBridge(stepper, lastTCBlock, int(latestHeightTC), tcClient)
@@ -224,11 +225,12 @@ func process(
 	result += formatOuputBalances("eth", ethTokens, eClient, ETH_BRIDGE_ADDRESS)
 	result += formatOuputBalances("tc", tcTokens, tcClient, common.Address{})
 
-	channelID := os.Getenv("SLACK_CHANNEL_ID") // todo
-	if _, _, err := slackInst.SendMessageToSlackWithChannel(channelID, "Bridge monitor", "Process", result); err != nil {
-		fmt.Println("slackInst.SendMessageToSlackWithChannel err", err)
-		return 0, 0, err
-	}
+	// channelID := os.Getenv("SLACK_CHANNEL_ID") // todo
+	// if _, _, err := slackInst.SendMessageToSlackWithChannel(channelID, "Bridge monitor", "Process", result); err != nil {
+	// 	fmt.Println("slackInst.SendMessageToSlackWithChannel err", err)
+	// 	return 0, 0, err
+	// }
+	fmt.Println(result)
 
 	return int(latestHeightETH), int(latestHeightTC), nil
 }
