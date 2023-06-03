@@ -207,7 +207,7 @@ func process(
 	}
 	// handle last block height = 0
 	if lastTCBlock == 0 {
-		lastTCBlock = int(latestHeightTC) -  84 // 84 ~ 14hours  
+		lastTCBlock = int(latestHeightTC) -  78 // 78 ~ 13hours   
 	}
 
 	totalDepositTC, totalWithdrawTC, err := scanTCBridge(stepper, lastTCBlock, int(latestHeightTC), tcClient)
@@ -225,12 +225,13 @@ func process(
 	result += formatOuputBalances("eth", ethTokens, eClient, ETH_BRIDGE_ADDRESS)
 	result += formatOuputBalances("tc", tcTokens, tcClient, common.Address{})
 
-	// channelID := os.Getenv("SLACK_CHANNEL_ID") // todo
-	// if _, _, err := slackInst.SendMessageToSlackWithChannel(channelID, "Bridge monitor", "Process", result); err != nil {
-	// 	fmt.Println("slackInst.SendMessageToSlackWithChannel err", err)
-	// 	return 0, 0, err
-	// }
-	fmt.Println(result)
+	channelID := os.Getenv("SLACK_CHANNEL_ID") // todo
+	if _, _, err := slackInst.SendMessageToSlackWithChannel(channelID, "Bridge monitor", "Process", result); err != nil {
+		fmt.Println(channelID)
+		fmt.Println("slackInst.SendMessageToSlackWithChannel err", err)
+		return 0, 0, err
+	}
+	// fmt.Println(result)
 
 	return int(latestHeightETH), int(latestHeightTC), nil
 }
@@ -454,9 +455,9 @@ func scanTCBridge(gap int, startBlockTC int, tcBlockLatest int, tcClient *ethcli
 func formatOutput(deposits map[common.Address]*big.Int, withdraws map[common.Address]*big.Int, prefix string, tokenList map[common.Address]*Token) string {
 	var notifyMintBurn string 
 	if prefix == "eth" {
-		notifyMintBurn = "\nETHEREUM BRIDGE \n"
+		notifyMintBurn = "\nETHEREUM BRIDGE 12h\n"
 	} else if prefix == "tc" {
-		notifyMintBurn = "\nTC BRIDGE \n"
+		notifyMintBurn = "\nTC BRIDGE 12h\n"
 	} else {
 		panic("invalid prefix")
 	}
