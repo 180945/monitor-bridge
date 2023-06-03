@@ -167,7 +167,7 @@ func main() {
 		}
 	}
 	// init cron job
-	scan()
+	// scan()
 	c := cron.New()
 	c.AddFunc("0 0 9 * * *", scan)
 	c.AddFunc("0 0 21 * * *", scan)
