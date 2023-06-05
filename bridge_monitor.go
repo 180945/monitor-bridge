@@ -207,7 +207,7 @@ func process(
 	}
 	// handle last block height = 0
 	if lastTCBlock == 0 {
-		lastTCBlock = int(latestHeightTC) -  78 // 78 ~ 13hours   
+		lastTCBlock = int(latestHeightTC) -  73 // 73 ~ 12hours   
 	}
 
 	totalDepositTC, totalWithdrawTC, err := scanTCBridge(stepper, lastTCBlock, int(latestHeightTC), tcClient)
