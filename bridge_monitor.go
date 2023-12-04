@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"github.com/tc_bridge/swap"
+	"io/ioutil"
 	"log"
-	"math/big"
 	"math"
+	"math/big"
 	"os"
 	"strings"
 
@@ -51,6 +54,19 @@ type WithdrawMultiToken struct {
 	Tokens     []common.Address
 	Recipients []common.Address
 	Amounts    []*big.Int
+}
+
+type Swap struct {
+	Amount0      *big.Int
+	Amount1      *big.Int
+	SqrtPriceX96 *big.Int
+	Liquidity    *big.Int
+	Tick         *big.Int
+}
+
+type SwapFee struct {
+	Amount0 *big.Int
+	Amount1 *big.Int
 }
 
 var ethTokens = make(map[common.Address]*Token)
@@ -120,7 +136,7 @@ func main() {
 		ethTokens[v.Address] = &Token{
 			Address: v.Address,
 			Decimal: v.Decimal,
-			Symbol: v.Symbol,
+			Symbol:  v.Symbol,
 		}
 	}
 
@@ -128,7 +144,7 @@ func main() {
 		tcTokens[v.Address] = &Token{
 			Address: v.Address,
 			Decimal: v.Decimal,
-			Symbol: v.Symbol,
+			Symbol:  v.Symbol,
 		}
 	}
 
@@ -166,8 +182,19 @@ func main() {
 			lastETHBlock = tempETHBlock + 1
 		}
 	}
+
+	// collect key swap
+	clientNos, err := ethclient.Dial("https://node.l2.trustless.computer/")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	latestBlockHeight := 6597454
+	//collectSwapKeyData(1000, latestBlockHeight-(24*3600/2), latestBlockHeight, common.HexToAddress("0x9e3a6ec2d10dcc918Ee4D2B3C9Fc1B517Fb27e02"), clientNos)
+	collectFeeSwapData(1000, 6503854, latestBlockHeight, common.HexToAddress("0x9e3a6ec2d10dcc918Ee4D2B3C9Fc1B517Fb27e02"), clientNos)
 	// init cron job
 	// scan()
+
 	c := cron.New()
 	c.AddFunc("0 0 9 * * *", scan)
 	c.AddFunc("0 0 21 * * *", scan)
@@ -194,7 +221,7 @@ func process(
 	}
 	// handle last block height = 0
 	if lastETHBlock == 0 {
-		lastETHBlock = int(latestHeightETH) - 3600 // 3600 ~ 12hours  
+		lastETHBlock = int(latestHeightETH) - 3600 // 3600 ~ 12hours
 	}
 	totalDepositETH, totalWithdrawETH, err := scanETHBridge(stepper, lastETHBlock, int(latestHeightETH), eClient)
 	if err != nil {
@@ -207,7 +234,7 @@ func process(
 	}
 	// handle last block height = 0
 	if lastTCBlock == 0 {
-		lastTCBlock = int(latestHeightTC) -  73 // 73 ~ 12hours   
+		lastTCBlock = int(latestHeightTC) - 73 // 73 ~ 12hours
 	}
 
 	totalDepositTC, totalWithdrawTC, err := scanTCBridge(stepper, lastTCBlock, int(latestHeightTC), tcClient)
@@ -453,7 +480,7 @@ func scanTCBridge(gap int, startBlockTC int, tcBlockLatest int, tcClient *ethcli
 }
 
 func formatOutput(deposits map[common.Address]*big.Int, withdraws map[common.Address]*big.Int, prefix string, tokenList map[common.Address]*Token) string {
-	var notifyMintBurn string 
+	var notifyMintBurn string
 	if prefix == "eth" {
 		notifyMintBurn = "\nETHEREUM BRIDGE 12h\n"
 	} else if prefix == "tc" {
@@ -486,7 +513,7 @@ func formatOutput(deposits map[common.Address]*big.Int, withdraws map[common.Add
 }
 
 func formatOuputBalances(prefix string, tokenList map[common.Address]*Token, clientInst *ethclient.Client, contractAddr common.Address) string {
-	var notifyBalances string 
+	var notifyBalances string
 	if prefix == "eth" {
 		notifyBalances = "\nETHEREUM BRIDGE BALANCES \n"
 	} else if prefix == "tc" {
@@ -501,7 +528,7 @@ func formatOuputBalances(prefix string, tokenList map[common.Address]*Token, cli
 			if v.Address != ETH_ADDRESS {
 				erc20Inst, _ := erc20.NewErc20(v.Address, clientInst)
 				bal, _ = erc20Inst.BalanceOf(nil, contractAddr)
-				
+
 			} else {
 				bal, _ = clientInst.BalanceAt(context.Background(), contractAddr, nil)
 			}
@@ -515,4 +542,345 @@ func formatOuputBalances(prefix string, tokenList map[common.Address]*Token, cli
 	}
 
 	return notifyBalances
+}
+
+type Data struct {
+	TxHash    string `json:"tx_hash"`
+	Address   string `json:"address"`
+	FromToken string `json:"from_token"`
+	ToToken   string `json:"to_token"`
+	Amount    string `json:"amount"`
+}
+
+const BTC = "BTC"
+const ETH = "ETH"
+
+func collectSwapKeyData(gap int, startBlockETH int, ethBlockLatest int, contractAddress common.Address, eClient *ethclient.Client) {
+	logSwapHash := crypto.Keccak256Hash([]byte("Swap(address,address,int256,int256,uint160,uint128,int24)"))
+	endBlock := ethBlockLatest
+	swapEvents := []Swap{}
+	totalVolume := big.NewInt(0)
+	jsonDatas := []Data{}
+	for {
+		endBlock += gap
+		if endBlock > ethBlockLatest {
+			endBlock = ethBlockLatest
+		}
+		if startBlockETH > endBlock {
+			break
+		}
+		query := ethereum.FilterQuery{
+			FromBlock: big.NewInt(int64(startBlockETH)),
+			ToBlock:   big.NewInt(int64(endBlock)),
+			Addresses: []common.Address{
+				contractAddress,
+			},
+			Topics: [][]common.Hash{
+				{logSwapHash},
+			},
+		}
+
+		logs, err := eClient.FilterLogs(context.Background(), query)
+		if err != nil {
+			panic(err)
+		}
+
+		contractETHAbi, err := abi.JSON(strings.NewReader(swap.SwapMetaData.ABI))
+		if err != nil {
+			panic(err)
+		}
+		mapData := make(map[string]bool)
+		for _, vLog := range logs {
+			switch vLog.Topics[0] {
+			case logSwapHash:
+				var swapEvent Swap
+				err = contractETHAbi.UnpackIntoInterface(&swapEvent, "Swap", vLog.Data)
+				if err != nil {
+					panic(err)
+				}
+				swapEvents = append(swapEvents, swapEvent)
+
+				fromToken := BTC
+				toToken := ETH
+				amount := swapEvent.Amount0
+				if swapEvent.Amount0.Cmp(big.NewInt(0)) < 0 {
+					fromToken = ETH
+					toToken = BTC
+					amount = swapEvent.Amount1
+				}
+				if !mapData[vLog.TxHash.String()] {
+					mapData[vLog.TxHash.String()] = true
+				} else {
+					continue
+				}
+				// add to data
+				jsonDatas = append(jsonDatas, Data{
+					TxHash:    vLog.TxHash.String(),
+					Address:   common.HexToAddress(vLog.Topics[2].String()).String(),
+					FromToken: fromToken,
+					ToToken:   toToken,
+					Amount:    amount.String(),
+				})
+			}
+		}
+		if endBlock == ethBlockLatest {
+			break
+		}
+		startBlockETH = endBlock + 1
+	}
+
+	for _, event := range swapEvents {
+		if event.Amount1.Cmp(big.NewInt(0)) > 0 {
+			totalVolume = big.NewInt(0).Add(totalVolume, event.Amount1)
+		} else {
+			totalVolume = big.NewInt(0).Sub(totalVolume, event.Amount1)
+		}
+	}
+
+	fmt.Printf("%+v \n", swapEvents)
+	fmt.Println("Volume 24h")
+	fmt.Printf("Total tx %v \n", len(swapEvents))
+	fmt.Printf("Total volume %v ETH \n", totalVolume.String())
+
+	file, _ := json.MarshalIndent(jsonDatas, "", " ")
+	_ = ioutil.WriteFile("swaps.json", file, 0644)
+}
+
+func collectFeeSwapData(gap int, startBlockETH int, ethBlockLatest int, contractAddress common.Address, eClient *ethclient.Client) {
+	logSwapHash := crypto.Keccak256Hash([]byte("CollectProtocol(address,address,uint128,uint128)"))
+	fmt.Println(logSwapHash.String())
+	endBlock := ethBlockLatest
+	feeBTC := big.NewInt(0)
+	feeETH := big.NewInt(0)
+	for {
+		endBlock += gap
+		if endBlock > ethBlockLatest {
+			endBlock = ethBlockLatest
+		}
+		if startBlockETH > endBlock {
+			break
+		}
+		query := ethereum.FilterQuery{
+			FromBlock: big.NewInt(int64(startBlockETH)),
+			ToBlock:   big.NewInt(int64(endBlock)),
+			Addresses: []common.Address{
+				contractAddress,
+			},
+			Topics: [][]common.Hash{
+				{logSwapHash},
+			},
+		}
+
+		logs, err := eClient.FilterLogs(context.Background(), query)
+		if err != nil {
+			panic(err)
+		}
+
+		contractETHAbi, err := abi.JSON(strings.NewReader(swap.SwapMetaData.ABI))
+		if err != nil {
+			panic(err)
+		}
+		for _, vLog := range logs {
+			switch vLog.Topics[0] {
+			case logSwapHash:
+				var swapEvent SwapFee
+				err = contractETHAbi.UnpackIntoInterface(&swapEvent, "CollectProtocol", vLog.Data)
+				if err != nil {
+					panic(err)
+				}
+
+				recipient := common.BytesToAddress(vLog.Topics[2].Bytes())
+				fmt.Println(recipient.String())
+
+				feeBTC = big.NewInt(0).Add(feeBTC, swapEvent.Amount0)
+				feeETH = big.NewInt(0).Add(feeETH, swapEvent.Amount1)
+			}
+		}
+		if endBlock == ethBlockLatest {
+			break
+		}
+		startBlockETH = endBlock + 1
+	}
+
+	fmt.Printf("Fee ETH %v \n", feeETH.String())
+	fmt.Printf("Fee BTC %v \n", feeBTC.String())
+}
+
+////////////////////////////////////////////////////////////////
+
+/// @dev Support uniswap bot
+
+type PoolCreatedData struct {
+	TickSpacing *big.Int       `json:"tickSpacing"`
+	Pool        common.Address `json:"pool"`
+}
+
+type PoolCreated struct {
+	Token0 common.Address `json:"token0"`
+	Token1 common.Address `json:"token1"`
+	Fee    *big.Int       `json:"fee"`
+	PoolCreatedData
+}
+
+// Scan new pairs
+func ScanPairsCreated(gap int, startBlockETH int, ethBlockLatest int, contractAddress common.Address, eClient *ethclient.Client) ([]PoolCreated, error) {
+	poolCreatedHash := crypto.Keccak256Hash([]byte("PoolCreated(address,address,uint24,int24,address)"))
+	fmt.Println(poolCreatedHash.String())
+	endBlock := ethBlockLatest
+	pools := []PoolCreated{}
+
+	for {
+		endBlock += gap
+		if endBlock > ethBlockLatest {
+			endBlock = ethBlockLatest
+		}
+		if startBlockETH > endBlock {
+			break
+		}
+		query := ethereum.FilterQuery{
+			FromBlock: big.NewInt(int64(startBlockETH)),
+			ToBlock:   big.NewInt(int64(endBlock)),
+			Addresses: []common.Address{
+				contractAddress,
+			},
+			Topics: [][]common.Hash{
+				{poolCreatedHash},
+			},
+		}
+
+		logs, err := eClient.FilterLogs(context.Background(), query)
+		if err != nil {
+			return pools, err
+		}
+
+		contractETHAbi, err := abi.JSON(strings.NewReader(swap.FactoryMetaData.ABI))
+		if err != nil {
+			return pools, err
+		}
+		for _, vLog := range logs {
+			switch vLog.Topics[0] {
+			case poolCreatedHash:
+				var poolCreatedData PoolCreatedData
+				err = contractETHAbi.UnpackIntoInterface(&poolCreatedData, "PoolCreated", vLog.Data)
+				if err != nil {
+					return pools, err
+				}
+
+				if len(vLog.Topics) < 4 {
+					continue
+				}
+
+				token0 := common.BytesToAddress(vLog.Topics[1].Bytes())
+				token1 := common.BytesToAddress(vLog.Topics[2].Bytes())
+				fee := big.NewInt(0).SetBytes(vLog.Topics[3].Bytes())
+
+				pools = append(pools, PoolCreated{
+					Token0:          token0,
+					Token1:          token1,
+					Fee:             fee,
+					PoolCreatedData: poolCreatedData,
+				})
+
+			}
+		}
+		if endBlock == ethBlockLatest {
+			break
+		}
+		startBlockETH = endBlock + 1
+	}
+
+	return pools, nil
+}
+
+// Parse add liquidity data
+func ParseLiquidityAdded(data []byte) ([]swap.INonfungiblePositionManagerIncreaseLiquidityParams, []swap.INonfungiblePositionManagerMintParams, error) {
+	// switch case below
+	increaseLiquidity := []swap.INonfungiblePositionManagerIncreaseLiquidityParams{}
+	mintParams := []swap.INonfungiblePositionManagerMintParams{}
+
+	parsedABI, err := abi.JSON(strings.NewReader(swap.NonfungiblePositionManagerMetaData.ABI))
+	if err != nil {
+		log.Fatalf("Failed to parse contract ABI: %v", err)
+	}
+
+	methodById, err := parsedABI.MethodById(data[0:4])
+	if err != nil {
+		return increaseLiquidity, mintParams, err
+	}
+
+	var calldatas [][]byte
+	if methodById.Name == "multicall" {
+		var args = make(map[string]interface{})
+		err = methodById.Inputs.UnpackIntoMap(args, data[4:])
+		if err != nil {
+			fmt.Printf("Failed to decode multicall ABI: %v", err)
+			return increaseLiquidity, mintParams, err
+		}
+		calldatas = args["data"].([][]byte)
+	} else {
+		calldatas = append(calldatas, data)
+	}
+
+	for _, v := range calldatas {
+		// decode with mint
+		sliceMethodIDOut := v[4:]
+		methodById, err = parsedABI.MethodById(v[0:4])
+		if err != nil {
+			continue
+		}
+
+		if methodById.Name == "mint" {
+			var tempMint swap.INonfungiblePositionManagerMintParams
+			var args = make(map[string]interface{})
+			err = methodById.Inputs.UnpackIntoMap(args, sliceMethodIDOut)
+			if err != nil {
+				fmt.Printf("\nFailed to decode increaseLiquidity ABI: %v", err)
+				continue
+			} else {
+				mintDataJson, _ := json.Marshal(args["params"])
+				if err := json.Unmarshal(mintDataJson, &tempMint); err != nil {
+					fmt.Println(err)
+					continue
+				}
+
+				mintParams = append(mintParams, tempMint)
+			}
+		} else if methodById.Name == "increaseLiquidity" {
+			var tempIncreaseLiquidity swap.INonfungiblePositionManagerIncreaseLiquidityParams
+			var args = make(map[string]interface{})
+			err = methodById.Inputs.UnpackIntoMap(args, sliceMethodIDOut)
+			if err != nil {
+				fmt.Printf("\nFailed to decode increaseLiquidity ABI: %v", err)
+				continue
+			} else {
+				mintDataJson, _ := json.Marshal(args["params"])
+				if err := json.Unmarshal(mintDataJson, &tempIncreaseLiquidity); err != nil {
+					fmt.Println(err)
+					continue
+				}
+				increaseLiquidity = append(increaseLiquidity, tempIncreaseLiquidity)
+			}
+		}
+	}
+
+	return increaseLiquidity, mintParams, nil
+}
+
+// Get price of a pair
+func GetTokenPrice(quoteV2Inst *swap.Quote, fromToken common.Address, toToken common.Address, amount *big.Int, fee *big.Int) (*big.Int, error) {
+	quoteSingle := swap.IQuoterV2QuoteExactInputSingleParams{
+		TokenIn:           fromToken,
+		TokenOut:          toToken,
+		AmountIn:          amount,
+		Fee:               fee,
+		SqrtPriceLimitX96: big.NewInt(0),
+	}
+
+	output, err := quoteV2Inst.QuoteExactInputSingle(nil, quoteSingle)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return output.AmountOut, nil
 }
