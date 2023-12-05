@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/tc_bridge/swap"
 	"log"
+	"math/big"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/suite"
@@ -70,4 +73,41 @@ func (suite *UniTestSuite) TestParseLiquidityCallData() {
 
 	fmt.Printf("\ntest result increaseLiquidity %+v\n", increaseLResult)
 	fmt.Printf("test result mint %+v\n", mintResult)
+}
+
+func (suite *UniTestSuite) TestSwapTokens() {
+	clientETH, err := ethclient.Dial("https://goerli.infura.io/v3/3544588d65864af7aaab0e945ec54a01")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// key
+	privateKey := os.Getenv("PRIVATE_KEY")
+
+	// quote v2 inst
+	quotev2, _ := swap.NewQuote(common.HexToAddress(QUOTE_V2), clientETH)
+
+	// swap ETH -> UNI
+	paths1 := []common.Address{common.HexToAddress(WETH), common.HexToAddress("0x1f9840a85d5af5bf1d1762f925bdaddc4201f984")}
+	fees1 := []int64{500}
+	swapAmount1 := big.NewInt(1e14)
+	minimumOut, _ := GetTokenPrice(quotev2, paths1[0], paths1[1], swapAmount1, big.NewInt(fees1[0]))
+
+	tx1, err := SwapTokens(clientETH, paths1, fees1, swapAmount1, minimumOut, privateKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("tx1: %v\n", tx1.Hash().String())
+
+	// swap UNI -> ETH
+	paths2 := []common.Address{common.HexToAddress("0x1f9840a85d5af5bf1d1762f925bdaddc4201f984"), common.HexToAddress(WETH)}
+	fees2 := []int64{500}
+	swapAmount2 := big.NewInt(1e12)
+	minimumOut2, _ := GetTokenPrice(quotev2, paths2[0], paths2[1], swapAmount2, big.NewInt(fees2[0]))
+
+	tx2, err := SwapTokens(clientETH, paths2, fees2, swapAmount2, minimumOut2, privateKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("tx2: %v\n", tx2.Hash().String())
 }

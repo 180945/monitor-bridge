@@ -2,26 +2,29 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/tc_bridge/swap"
-	"io/ioutil"
-	"log"
-	"math"
-	"math/big"
-	"os"
-	"strings"
-
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
+	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/tc_bridge/bridgeETH"
 	"github.com/tc_bridge/bridgeTC"
 	"github.com/tc_bridge/erc20"
 	"github.com/tc_bridge/slack"
+	"github.com/tc_bridge/swap"
 	cron "gopkg.in/robfig/cron.v2"
+	"io/ioutil"
+	"log"
+	"math"
+	"math/big"
+	"os"
+	"strings"
+	"time"
 )
 
 // tc section
@@ -725,7 +728,6 @@ type PoolCreated struct {
 // Scan new pairs
 func ScanPairsCreated(gap int, startBlockETH int, ethBlockLatest int, contractAddress common.Address, eClient *ethclient.Client) ([]PoolCreated, error) {
 	poolCreatedHash := crypto.Keccak256Hash([]byte("PoolCreated(address,address,uint24,int24,address)"))
-	fmt.Println(poolCreatedHash.String())
 	endBlock := ethBlockLatest
 	pools := []PoolCreated{}
 
@@ -866,6 +868,107 @@ func ParseLiquidityAdded(data []byte) ([]swap.INonfungiblePositionManagerIncreas
 	return increaseLiquidity, mintParams, nil
 }
 
+const ROUTER_MAINNET = "0xE592427A0AEce92De3Edee1F18E0157C05861564"
+const WETH = "0xb4fbf271143f4fbf7b91a5ded31805e42b2208d6"
+const QUOTE_V2 = "0x61fFE014bA17989E743c5F6cB21bF9697530B21e"
+
+// swap
+func SwapTokens(clientInst *ethclient.Client, paths []common.Address, fees []int64, amount *big.Int, minimumAmountOut *big.Int, privateKeyStr string) (*types.Transaction, error) {
+	// validate inputs
+	if len(paths) < 2 || len(paths) != len(fees)+1 {
+		return nil, fmt.Errorf("invalid inputs")
+	}
+
+	privateKey, err := crypto.HexToECDSA(privateKeyStr)
+	if err != nil {
+		return nil, err
+	}
+
+	chainId, err := clientInst.NetworkID(context.Background())
+	if err != nil {
+		return nil, err
+	}
+
+	auth, err := bind.NewKeyedTransactorWithChainID(privateKey, chainId)
+	if err != nil {
+		return nil, err
+	}
+
+	// approve token
+	tokenInput, err := erc20.NewErc20(paths[0], clientInst)
+	if err != nil {
+		return nil, err
+	}
+
+	routerAddr := common.HexToAddress(ROUTER_MAINNET)
+	weth := common.HexToAddress(WETH)
+
+	if paths[0] != weth {
+		// check allowance
+		allowanceBal, err := tokenInput.Allowance(nil, auth.From, routerAddr)
+		if err != nil {
+			return nil, err
+		}
+
+		if allowanceBal.Cmp(amount) < 0 {
+			_, err = tokenInput.Approve(auth, routerAddr, amount)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	// swap
+	routerInst, err := swap.NewRouter(routerAddr, clientInst)
+	if err != nil {
+		return nil, err
+	}
+
+	swapPath, err := BuildPath(paths, fees)
+	if err != nil {
+		return nil, err
+	}
+
+	var calldata [][]byte
+	// build calldata
+	routerABI, err := abi.JSON(strings.NewReader(swap.RouterMetaData.ABI))
+	if err != nil {
+		return nil, err
+	}
+
+	exactInputData := swap.ISwapRouterExactInputParams{
+		Path:             swapPath,
+		Recipient:        auth.From,
+		Deadline:         big.NewInt(time.Now().Unix() + 1000),
+		AmountIn:         amount,
+		AmountOutMinimum: minimumAmountOut,
+	}
+
+	var unwrapEth []byte
+	// handle eth
+	if paths[0] == weth {
+		auth.Value = amount
+	} else if paths[len(paths)-1] == weth {
+		unwrapEth, err = routerABI.Pack("unwrapWETH9", minimumAmountOut, auth.From)
+		if err != nil {
+			return nil, err
+		}
+		exactInputData.Recipient = common.Address{}
+	}
+
+	callSwapData, err := routerABI.Pack("exactInput", exactInputData)
+	if err != nil {
+		return nil, err
+	}
+
+	calldata = append(calldata, callSwapData)
+	if len(unwrapEth) > 0 {
+		calldata = append(calldata, unwrapEth)
+	}
+
+	return routerInst.Multicall(auth, calldata)
+}
+
 // Get price of a pair
 func GetTokenPrice(quoteV2Inst *swap.Quote, fromToken common.Address, toToken common.Address, amount *big.Int, fee *big.Int) (*big.Int, error) {
 	quoteSingle := swap.IQuoterV2QuoteExactInputSingleParams{
@@ -883,4 +986,20 @@ func GetTokenPrice(quoteV2Inst *swap.Quote, fromToken common.Address, toToken co
 	}
 
 	return output.AmountOut, nil
+}
+
+func BuildPath(paths []common.Address, fees []int64) ([]byte, error) {
+	var temp []byte
+	for i := 0; i < len(fees); i++ {
+		temp = append(temp, paths[i].Bytes()...)
+		temp1 := fmt.Sprintf("%06x", fees[i])
+		fee, err := hex.DecodeString(temp1)
+		if err != nil {
+			return temp, err
+		}
+		temp = append(temp, fee...)
+	}
+	temp = append(temp, paths[len(paths)-1].Bytes()...)
+
+	return temp, nil
 }
