@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -17,6 +18,7 @@ import (
 	"github.com/tc_bridge/erc20"
 	"github.com/tc_bridge/slack"
 	"github.com/tc_bridge/swap"
+	l2 "github.com/tc_bridge/zksyncBridge"
 	cron "gopkg.in/robfig/cron.v2"
 	"io/ioutil"
 	"log"
@@ -125,10 +127,144 @@ var TC_TOKEN_LIST = []Token{
 
 var ETH_BRIDGE_ADDRESS = common.HexToAddress("0xa103f20367b18d004710141ff505a6b63ce6885c")
 var ETH_ADDRESS = common.HexToAddress("0x0000000000000000000000000000000000000000")
+var L1_MESSENGER_ADDRESS = common.HexToAddress("0x0000000000000000000000000000000000008008")
+
+type Proof struct {
+	L2BatchNumber     *big.Int
+	L2MessageIndex    *big.Int
+	L2TxNumberInBatch uint16
+	Message           []byte
+	Paths             [][32]byte
+}
 
 var slackInst *slack.Slack
 
 func main() {
+
+	client, err := ethclient.Dial("https://mainnet.infura.io/v3/9ef9bfbcb8a74ad48d473c2036b999a1")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	clientL2, err := ethclient.Dial("https://mainnet.era.zksync.io")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	privKey, err := crypto.HexToECDSA("d4f6c5a885dc31fbec92782ed991196d1af57005484831df7128d7cbc9567a51")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	auth, err := bind.NewKeyedTransactorWithChainID(privKey, big.NewInt(1))
+	if err != nil {
+		log.Fatal(err)
+	}
+	//
+	//// L1 Bridge address
+	bridgeL1 := common.HexToAddress("0x57891966931Eb4Bb6FB81430E6cE0A03AAbDe063")            // todo replace
+	checkProofFinalized := common.HexToAddress("0xD7f9f54194C633F36CCD5F3da84ad4a1c38cB2cB") // todo replace
+	bridgeL2 := common.HexToAddress("0x11f943b2c77b743AB90f4A0Ae7d5A4e7FCA3E102")
+	receiverAddr := common.HexToAddress("REPLACE_HERE")
+	bitcoinAddr := common.HexToAddress("REPLACE_HERE")
+	depositAmount := big.NewInt(10)
+	withdrawAmount := big.NewInt(10)
+
+	// @dev DEPOSIT FROM L1
+	contractL1, err := l2.NewL1(checkProofFinalized, client)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	zksyncBridgeL1, err := l2.NewBridgeL1(bridgeL1, client)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// approve
+	erc20Contract, err := erc20.NewErc20(bitcoinAddr, client)
+	if err != nil {
+		log.Fatal(err)
+	}
+	_, err = erc20Contract.Approve(auth, bridgeL1, depositAmount)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// deposit
+	depositTx, err := zksyncBridgeL1.Deposit0(
+		auth,
+		receiverAddr,
+		bitcoinAddr,
+		depositAmount,
+		big.NewInt(1e6),
+		big.NewInt(800),
+		auth.From,
+	)
+	fmt.Println(depositTx.Hash().String())
+
+	// WITHDRAW FROM L2
+	contractL2, err := l2.NewL2(bridgeL2, clientL2)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	tokenL2, err := contractL2.L2TokenAddress(nil, bitcoinAddr)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// create withdraw tx
+	withdrawTxL2, err := contractL2.Withdraw0(
+		auth,
+		auth.From,
+		tokenL2,
+		withdrawAmount,
+	)
+	fmt.Println(withdrawTxL2.Hash().String())
+
+	// check tx ready to finalize
+	// todo: get proof here
+
+	// finalize withdraw
+	claimTokenTx, err := zksyncBridgeL1.FinalizeWithdrawal(
+		auth,
+		big.NewInt(10), // batch number
+		big.NewInt(10), // message index
+		100,            // tx in batch
+		[]byte{},
+		[][32]byte{},
+	)
+
+	fmt.Println(claimTokenTx.Hash().String())
+
+	// withdraw tx
+	tx := common.HexToHash("487f0acbc9fdab98dcbaa48e4637699b384a566810f14b856f2d2d4d8fb9ad68")
+	isFinalized, proof, err := checkTxReadyToFinalized(clientL2, contractL1, tx)
+	if err != nil {
+		panic("fuck")
+	}
+
+	if isFinalized {
+		// do nothing
+	} else {
+		finalTx, err := zksyncBridgeL1.FinalizeWithdrawal(
+			auth,
+			proof.L2BatchNumber,
+			proof.L2MessageIndex,
+			proof.L2TxNumberInBatch,
+			proof.Message,
+			proof.Paths,
+		)
+
+		if err != nil {
+			panic("fuck")
+		}
+
+		fmt.Println(finalTx.Hash().String())
+	}
+
+	return
 	//todo: load last block from file/DB
 	var lastETHBlock = 0
 	var lastTCBlock = 0
@@ -187,14 +323,20 @@ func main() {
 	}
 
 	// collect key swap
-	clientNos, err := ethclient.Dial("https://node.l2.trustless.computer/")
+	clientNos, err := ethclient.Dial("https://eth-mainnet.g.alchemy.com/v2/Z9TeZseBci080bqyqTdHKHaJ5w4UgZNL")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	latestBlockHeight := 6597454
+	txHash := "0x6c8343de293f09fb1c44ed6dce2c4e286a9b169e42d6c07848796adbc838ac21"
+	res, _ := clientNos.TransactionReceipt(context.Background(), common.HexToHash(txHash))
+	fmt.Println(res.BlockHash.String())
+	res2, _ := clientNos.BlockByNumber(context.Background(), res.BlockNumber)
+	fmt.Println(res2.Hash().String())
+	//latestBlockHeight := 40512951
 	//collectSwapKeyData(1000, latestBlockHeight-(24*3600/2), latestBlockHeight, common.HexToAddress("0x9e3a6ec2d10dcc918Ee4D2B3C9Fc1B517Fb27e02"), clientNos)
-	collectFeeSwapData(1000, 6503854, latestBlockHeight, common.HexToAddress("0x9e3a6ec2d10dcc918Ee4D2B3C9Fc1B517Fb27e02"), clientNos)
+	//collectFeeSwapData(1000, 6503854, latestBlockHeight, common.HexToAddress("0x9e3a6ec2d10dcc918Ee4D2B3C9Fc1B517Fb27e02"), clientNos)
+	//collectBorrowersData(50000, 38335878, latestBlockHeight, common.HexToAddress("0x81d9Fa68c193F8B7494BeDD5Aebc38a0603f751B"), clientNos)
 	// init cron job
 	// scan()
 
@@ -209,6 +351,83 @@ func main() {
 	defer c.Stop()
 	defer clientTC.Close()
 	defer clientETH.Close()
+}
+
+func checkTxReadyToFinalized(clientL2 *ethclient.Client, contactL1 *l2.L1, txHash common.Hash) (bool, *Proof, error) {
+	receipt, err := clientL2.TransactionReceipt(context.Background(), txHash)
+	if err != nil {
+		return false, nil, err
+	}
+
+	if receipt == nil {
+		return false, nil, errors.New("invalid withdraw tx")
+	}
+
+	var logRes2 *types.Log
+	for _, logValue := range receipt.Logs {
+		if logValue.Address == L1_MESSENGER_ADDRESS && logValue.Topics[0] == crypto.Keccak256Hash([]byte("L1MessageSent(address,bytes32,bytes)")) {
+			logRes2 = logValue
+			break
+		}
+	}
+	fmt.Println(logRes2)
+
+	r := make(map[string]interface{})
+	err = clientL2.Client().Call(&r, "eth_getTransactionReceipt", txHash)
+	if err != nil {
+		return false, nil, err
+	}
+
+	index := new(big.Int)
+	logL1ToL2Map := r["l2ToL1Logs"].([]interface{})
+	for _, v := range logL1ToL2Map {
+		vmap := v.(map[string]interface{})
+		sender := common.HexToAddress(vmap["sender"].(string))
+		if sender == L1_MESSENGER_ADDRESS {
+			index.SetString(vmap["logIndex"].(string)[2:], 16)
+			break
+		}
+	}
+
+	var proofRes map[string]interface{}
+	err = clientL2.Client().Call(&proofRes, "zks_getL2ToL1LogProof", txHash, index)
+	if err != nil {
+		return false, nil, err
+	}
+
+	l1BatchNumber := new(big.Int)
+	l1BatchNumber.SetString(r["l1BatchNumber"].(string)[2:], 16)
+	l1BatchTxIndex := new(big.Int)
+	l1BatchTxIndex.SetString(r["l1BatchTxIndex"].(string)[2:], 16)
+	proofId := big.NewInt(int64(proofRes["id"].(float64)))
+	l2ChainId, err := clientL2.ChainID(context.Background())
+	if err != nil {
+		return false, nil, err
+	}
+
+	isFinalized, err := contactL1.IsWithdrawalFinalized(nil, l2ChainId, l1BatchNumber, proofId)
+	if err != nil {
+		return false, nil, err
+	}
+
+	//paths := [][32]byte{}
+	for _, v := range proofRes["proof"].([]interface{}) {
+		fmt.Println(v.(string))
+	}
+
+	if isFinalized {
+		return true, nil, nil
+	}
+
+	// proof
+	proof := &Proof{
+		L2BatchNumber:     l1BatchNumber,
+		L2MessageIndex:    proofId,
+		L2TxNumberInBatch: uint16(l1BatchTxIndex.Uint64()),
+		Message:           logRes2.Data,
+	}
+
+	return false, proof, nil
 }
 
 func process(

@@ -1,3 +1,5 @@
 .idea
 app.yaml
 bridge-monitor.iml
+*/node_modules
+.DS_Store
