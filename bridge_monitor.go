@@ -165,7 +165,7 @@ func main() {
 	bridgeL1 := common.HexToAddress("0x57891966931Eb4Bb6FB81430E6cE0A03AAbDe063")            // todo replace
 	checkProofFinalized := common.HexToAddress("0xD7f9f54194C633F36CCD5F3da84ad4a1c38cB2cB") // todo replace
 	bridgeL2 := common.HexToAddress("0x11f943b2c77b743AB90f4A0Ae7d5A4e7FCA3E102")
-	receiverAddr := common.HexToAddress("REPLACE_HERE")
+	receiverAddr := common.HexToAddress("0xdac17f958d2ee523a2206206994597c13d831ec7") // todo: replace
 	bitcoinAddr := common.HexToAddress("REPLACE_HERE")
 	depositAmount := big.NewInt(10)
 	withdrawAmount := big.NewInt(10)
@@ -222,21 +222,6 @@ func main() {
 		withdrawAmount,
 	)
 	fmt.Println(withdrawTxL2.Hash().String())
-
-	// check tx ready to finalize
-	// todo: get proof here
-
-	// finalize withdraw
-	claimTokenTx, err := zksyncBridgeL1.FinalizeWithdrawal(
-		auth,
-		big.NewInt(10), // batch number
-		big.NewInt(10), // message index
-		100,            // tx in batch
-		[]byte{},
-		[][32]byte{},
-	)
-
-	fmt.Println(claimTokenTx.Hash().String())
 
 	// withdraw tx
 	tx := common.HexToHash("487f0acbc9fdab98dcbaa48e4637699b384a566810f14b856f2d2d4d8fb9ad68")
@@ -410,13 +395,27 @@ func checkTxReadyToFinalized(clientL2 *ethclient.Client, contactL1 *l2.L1, txHas
 		return false, nil, err
 	}
 
-	//paths := [][32]byte{}
+	fmt.Println(isFinalized)
+
+	paths := [][32]byte{}
+	temp := [32]byte{}
 	for _, v := range proofRes["proof"].([]interface{}) {
-		fmt.Println(v.(string))
+		vBytes, err := hex.DecodeString(v.(string)[2:])
+		if err != nil {
+			return false, nil, err
+		}
+		copy(temp[:], vBytes[0:32])
+		paths = append(paths, temp)
 	}
 
 	if isFinalized {
 		return true, nil, nil
+	}
+
+	//decodeBytes
+	messageData := logRes2.Data
+	if len(messageData) >= 64 {
+		messageData = logRes2.Data[64 : logRes2.Data[63]+64]
 	}
 
 	// proof
@@ -424,7 +423,8 @@ func checkTxReadyToFinalized(clientL2 *ethclient.Client, contactL1 *l2.L1, txHas
 		L2BatchNumber:     l1BatchNumber,
 		L2MessageIndex:    proofId,
 		L2TxNumberInBatch: uint16(l1BatchTxIndex.Uint64()),
-		Message:           logRes2.Data,
+		Message:           messageData,
+		Paths:             paths,
 	}
 
 	return false, proof, nil
