@@ -162,10 +162,10 @@ func main() {
 	}
 	//
 	//// L1 Bridge address
-	bridgeL1 := common.HexToAddress("0x57891966931Eb4Bb6FB81430E6cE0A03AAbDe063")            // todo replace
-	checkProofFinalized := common.HexToAddress("0xD7f9f54194C633F36CCD5F3da84ad4a1c38cB2cB") // todo replace
-	bridgeL2 := common.HexToAddress("0x11f943b2c77b743AB90f4A0Ae7d5A4e7FCA3E102")
-	receiverAddr := common.HexToAddress("0xdac17f958d2ee523a2206206994597c13d831ec7") // todo: replace
+	bridgeL1 := common.HexToAddress("57891966931Eb4Bb6FB81430E6cE0A03AAbDe063")            // todo replace
+	checkProofFinalized := common.HexToAddress("D7f9f54194C633F36CCD5F3da84ad4a1c38cB2cB") // todo replace
+	bridgeL2 := common.HexToAddress("11f943b2c77b743AB90f4A0Ae7d5A4e7FCA3E102")
+	receiverAddr := common.HexToAddress("dac17f958d2ee523a2206206994597c13d831ec7") // todo: replace
 	bitcoinAddr := common.HexToAddress("REPLACE_HERE")
 	depositAmount := big.NewInt(10)
 	withdrawAmount := big.NewInt(10)
@@ -395,7 +395,9 @@ func checkTxReadyToFinalized(clientL2 *ethclient.Client, contactL1 *l2.L1, txHas
 		return false, nil, err
 	}
 
-	fmt.Println(isFinalized)
+	if isFinalized {
+		return true, nil, nil
+	}
 
 	paths := [][32]byte{}
 	temp := [32]byte{}
@@ -406,10 +408,6 @@ func checkTxReadyToFinalized(clientL2 *ethclient.Client, contactL1 *l2.L1, txHas
 		}
 		copy(temp[:], vBytes[0:32])
 		paths = append(paths, temp)
-	}
-
-	if isFinalized {
-		return true, nil, nil
 	}
 
 	//decodeBytes
