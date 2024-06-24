@@ -161,12 +161,15 @@ func main() {
 		log.Fatal(err)
 	}
 	//
-	//// L1 Bridge address
-	bridgeL1 := common.HexToAddress("57891966931Eb4Bb6FB81430E6cE0A03AAbDe063")            // todo replace
-	checkProofFinalized := common.HexToAddress("D7f9f54194C633F36CCD5F3da84ad4a1c38cB2cB") // todo replace
-	bridgeL2 := common.HexToAddress("11f943b2c77b743AB90f4A0Ae7d5A4e7FCA3E102")
-	receiverAddr := common.HexToAddress("dac17f958d2ee523a2206206994597c13d831ec7") // todo: replace
-	bitcoinAddr := common.HexToAddress("REPLACE_HERE")
+	//// L1 Bridge address (sonic)
+	bridgeL1 := common.HexToAddress("57891966931Eb4Bb6FB81430E6cE0A03AAbDe063")            // todo replace: dia chi bridge
+	checkProofFinalized := common.HexToAddress("D7f9f54194C633F36CCD5F3da84ad4a1c38cB2cB") // todo replace: lay tu Hieu
+
+	bridgeL2 := common.HexToAddress("11f943b2c77b743AB90f4A0Ae7d5A4e7FCA3E102") // 
+	receiverAddr := common.HexToAddress("dac17f958d2ee523a2206206994597c13d831ec7") // todo: replace: vi nhan tren l3
+	
+	bitcoinAddr := common.HexToAddress("REPLACE_HERE") // tren l1 sonic, co the la ETH, BVM.
+	
 	depositAmount := big.NewInt(10)
 	withdrawAmount := big.NewInt(10)
 
@@ -181,7 +184,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// approve
+	// approve l1
 	erc20Contract, err := erc20.NewErc20(bitcoinAddr, client)
 	if err != nil {
 		log.Fatal(err)
@@ -191,7 +194,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// deposit
+	// deposit l1 
 	depositTx, err := zksyncBridgeL1.Deposit0(
 		auth,
 		receiverAddr,
@@ -214,10 +217,10 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// create withdraw tx
+	// create withdraw tx (tx burn) FE tao.
 	withdrawTxL2, err := contractL2.Withdraw0(
 		auth,
-		auth.From,
+		auth.From, // bo dia chi vi tam BE vao
 		tokenL2,
 		withdrawAmount,
 	)
@@ -225,7 +228,7 @@ func main() {
 
 	// withdraw tx
 	tx := common.HexToHash("487f0acbc9fdab98dcbaa48e4637699b384a566810f14b856f2d2d4d8fb9ad68")
-	isFinalized, proof, err := checkTxReadyToFinalized(clientL2, contractL1, tx)
+	isFinalized, proof, err := checkTxReadyToFinalized(clientL2, contractL1, tx) // khi co tx withdraw + 15p (hoi Hieu).
 	if err != nil {
 		panic("fuck")
 	}
@@ -233,6 +236,7 @@ func main() {
 	if isFinalized {
 		// do nothing
 	} else {
+		// claim, se nhan tien tren L1 (vi tam)
 		finalTx, err := zksyncBridgeL1.FinalizeWithdrawal(
 			auth,
 			proof.L2BatchNumber,
@@ -246,7 +250,7 @@ func main() {
 			panic("fuck")
 		}
 
-		fmt.Println(finalTx.Hash().String())
+		fmt.Println(finalTx.Hash().String()) // xong thi coi nhu co tien.
 	}
 
 	return
