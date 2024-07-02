@@ -135,18 +135,18 @@ type Proof struct {
 	L2TxNumberInBatch uint16
 	Message           []byte
 	Paths             [][32]byte
+	Sender            common.Address
 }
 
 var slackInst *slack.Slack
 
 func main() {
-
-	client, err := ethclient.Dial("https://mainnet.infura.io/v3/9ef9bfbcb8a74ad48d473c2036b999a1")
+	client, err := ethclient.Dial("https://rpc.supersonic.bvm.network") // https://mainnet.infura.io/v3/9ef9bfbcb8a74ad48d473c2036b999a1")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	clientL2, err := ethclient.Dial("https://mainnet.era.zksync.io")
+	clientL2, err := ethclient.Dial("https://rpc.iron-chain-bank.l2aas.com") //https://mainnet.era.zksync.io")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -160,97 +160,193 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	//
-	//// L1 Bridge address (sonic)
-	bridgeL1 := common.HexToAddress("57891966931Eb4Bb6FB81430E6cE0A03AAbDe063")            // todo replace: dia chi bridge
-	checkProofFinalized := common.HexToAddress("D7f9f54194C633F36CCD5F3da84ad4a1c38cB2cB") // todo replace: lay tu Hieu
+	////
+	////// L1 Bridge address (sonic)
+	//// BridgeER20
+	bridgeL1 := common.HexToAddress("5C6EC179E78Ff47721f4aC8ceBC2A606de6174e3") // todo replace: dia chi bridge
+	//// bridge Native
+	bridgeNativeL1 := common.HexToAddress("dcae67621fB30C0a9FC75576e5c7d42F988d2B2B") // todo replace: dia chi bridge
 
-	bridgeL2 := common.HexToAddress("11f943b2c77b743AB90f4A0Ae7d5A4e7FCA3E102") // 
+	// BRIDGE_ERC20
+	bridgeL2 := common.HexToAddress("11f943b2c77b743AB90f4A0Ae7d5A4e7FCA3E102")     //
 	receiverAddr := common.HexToAddress("dac17f958d2ee523a2206206994597c13d831ec7") // todo: replace: vi nhan tren l3
-	
+
 	bitcoinAddr := common.HexToAddress("REPLACE_HERE") // tren l1 sonic, co the la ETH, BVM.
-	
+
 	depositAmount := big.NewInt(10)
 	withdrawAmount := big.NewInt(10)
 
 	// @dev DEPOSIT FROM L1
-	contractL1, err := l2.NewL1(checkProofFinalized, client)
+	//contractL1, err := l2.NewL1(checkProofFinalized, client)
+	//if err != nil {
+	//	log.Fatal(err)
+	//}
+
+	// contract L1 erc20
+	zksyncBridgeL1, err := l2.NewL1ERC20(bridgeL1, client)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	zksyncBridgeL1, err := l2.NewBridgeL1(bridgeL1, client)
+	// contract L1 native
+	zksyncBridgeL1Native, err := l2.NewL1Native(bridgeNativeL1, client)
 	if err != nil {
 		log.Fatal(err)
 	}
+	fmt.Println(zksyncBridgeL1Native)
 
 	// approve l1
-	erc20Contract, err := erc20.NewErc20(bitcoinAddr, client)
-	if err != nil {
-		log.Fatal(err)
-	}
-	_, err = erc20Contract.Approve(auth, bridgeL1, depositAmount)
-	if err != nil {
-		log.Fatal(err)
-	}
+	{
+		// @notice deposit tokens
+		erc20Contract, err := erc20.NewErc20(bitcoinAddr, client)
+		if err != nil {
+			log.Fatal(err)
+		}
+		_, err = erc20Contract.Approve(auth, bridgeL1, depositAmount)
+		if err != nil {
+			log.Fatal(err)
+		}
 
-	// deposit l1 
-	depositTx, err := zksyncBridgeL1.Deposit0(
-		auth,
-		receiverAddr,
-		bitcoinAddr,
-		depositAmount,
-		big.NewInt(1e6),
-		big.NewInt(800),
-		auth.From,
-	)
-	fmt.Println(depositTx.Hash().String())
+		// deposit l1
+		depositTx, err := zksyncBridgeL1.Deposit0(
+			auth,
+			receiverAddr,
+			bitcoinAddr,
+			depositAmount,
+			big.NewInt(1e6),
+			big.NewInt(800),
+			auth.From,
+		)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(depositTx.Hash().String())
 
-	// WITHDRAW FROM L2
-	contractL2, err := l2.NewL2(bridgeL2, clientL2)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	tokenL2, err := contractL2.L2TokenAddress(nil, bitcoinAddr)
-	if err != nil {
-		log.Fatal(err)
 	}
 
-	// create withdraw tx (tx burn) FE tao.
-	withdrawTxL2, err := contractL2.Withdraw0(
-		auth,
-		auth.From, // bo dia chi vi tam BE vao
-		tokenL2,
-		withdrawAmount,
-	)
-	fmt.Println(withdrawTxL2.Hash().String())
+	{
+		// @notice deposit native token
+		bridgeAmount := big.NewInt(10000000000)
+		auth.Value = bridgeAmount
+
+		depositTx, err := zksyncBridgeL1Native.RequestL2Transaction(
+			auth,
+			receiverAddr,
+			bridgeAmount,
+			[]byte{},
+			big.NewInt(1e6),
+			big.NewInt(800),
+			[][]byte{},
+			auth.From,
+		)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(depositTx.Hash().String())
+	}
+
+	{
+		// WITHDRAW TOKEN FROM L2
+		contractL2, err := l2.NewL2(bridgeL2, clientL2)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		tokenL2, err := contractL2.L2TokenAddress(nil, bitcoinAddr)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		// create withdraw tx (tx burn) FE tao.
+		withdrawTxL2, err := contractL2.Withdraw0(
+			auth,
+			auth.From, // bo dia chi vi tam BE vao
+			tokenL2,
+			withdrawAmount,
+		)
+		fmt.Println(withdrawTxL2.Hash().String())
+	}
+
+	{
+		// WITHDRAW NATIVE FROM L2
+		contractNativeL2, err := l2.NewL2(common.HexToAddress("0x000000000000000000000000000000000000800A"), clientL2)
+		if err != nil {
+			log.Fatal(err)
+		}
+		auth.Value = withdrawAmount
+		withdrawTxL2, err := contractNativeL2.Withdraw(
+			auth,
+			auth.From, // bo dia chi vi tam BE vao
+		)
+		fmt.Println(withdrawTxL2.Hash().String())
+
+	}
 
 	// withdraw tx
-	tx := common.HexToHash("487f0acbc9fdab98dcbaa48e4637699b384a566810f14b856f2d2d4d8fb9ad68")
-	isFinalized, proof, err := checkTxReadyToFinalized(clientL2, contractL1, tx) // khi co tx withdraw + 15p (hoi Hieu).
+	tx := common.HexToHash("2067ff9fff25dcd8d8ba2f72163aa38efd4aba5f9964d58ca0775d5d419c2157")
+	isFinalized, proof, err := checkTxReadyToFinalized(clientL2, tx) // khi co tx withdraw + 15p (hoi Hieu).
 	if err != nil {
+		fmt.Println(err.Error())
 		panic("fuck")
 	}
 
-	if isFinalized {
-		// do nothing
-	} else {
-		// claim, se nhan tien tren L1 (vi tam)
-		finalTx, err := zksyncBridgeL1.FinalizeWithdrawal(
-			auth,
-			proof.L2BatchNumber,
-			proof.L2MessageIndex,
-			proof.L2TxNumberInBatch,
-			proof.Message,
-			proof.Paths,
-		)
+	if !isFinalized {
+		if common.HexToAddress("0x000000000000000000000000000000000000800A") == proof.Sender {
+			withdrawBridge, err := l2.NewL1Native(bridgeNativeL1, client)
+			if err != nil {
+				log.Fatal(err)
+			}
 
-		if err != nil {
-			panic("fuck")
+			// claim, se nhan tien tren L1 (vi tam)
+			auth.GasPrice = big.NewInt(15 * 1e8)
+			finalTx, err := withdrawBridge.FinalizeEthWithdrawal(
+				auth,
+				proof.L2BatchNumber,
+				proof.L2MessageIndex,
+				proof.L2TxNumberInBatch,
+				proof.Message,
+				proof.Paths,
+			)
+
+			if err != nil {
+				// handle error message
+				fmt.Println(err.Error())
+				if err.Error() == "execution reverted: jj" {
+					// if mess == jj then tx done
+					fmt.Println("this tx claimed on L1")
+				} else {
+					panic("fuck")
+				}
+			} else {
+				fmt.Println(finalTx.Hash().String()) // xong thi coi nhu co tien.
+			}
+		} else {
+			withdrawBridge, err := l2.NewL1ERC20(bridgeL1, client)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			// claim, se nhan tien tren L1 (vi tam)
+			auth.GasPrice = big.NewInt(15 * 1e8)
+			finalTx, err := withdrawBridge.FinalizeWithdrawal(
+				auth,
+				proof.L2BatchNumber,
+				proof.L2MessageIndex,
+				proof.L2TxNumberInBatch,
+				proof.Message,
+				proof.Paths,
+			)
+
+			if err != nil {
+				// handle error message
+				fmt.Println(err.Error())
+				panic("fuck")
+
+				// if mess == pw then tx done
+			} else {
+				fmt.Println(finalTx.Hash().String()) // xong thi coi nhu co tien.
+			}
 		}
-
-		fmt.Println(finalTx.Hash().String()) // xong thi coi nhu co tien.
 	}
 
 	return
@@ -342,7 +438,7 @@ func main() {
 	defer clientETH.Close()
 }
 
-func checkTxReadyToFinalized(clientL2 *ethclient.Client, contactL1 *l2.L1, txHash common.Hash) (bool, *Proof, error) {
+func checkTxReadyToFinalized(clientL2 *ethclient.Client, txHash common.Hash) (bool, *Proof, error) {
 	receipt, err := clientL2.TransactionReceipt(context.Background(), txHash)
 	if err != nil {
 		return false, nil, err
@@ -359,7 +455,10 @@ func checkTxReadyToFinalized(clientL2 *ethclient.Client, contactL1 *l2.L1, txHas
 			break
 		}
 	}
-	fmt.Println(logRes2)
+
+	if logRes2 == nil || len(logRes2.Topics) < 2 {
+		return false, nil, errors.New("log L1MessageSent not exist")
+	}
 
 	r := make(map[string]interface{})
 	err = clientL2.Client().Call(&r, "eth_getTransactionReceipt", txHash)
@@ -384,25 +483,15 @@ func checkTxReadyToFinalized(clientL2 *ethclient.Client, contactL1 *l2.L1, txHas
 		return false, nil, err
 	}
 
+	if r["l1BatchNumber"] == nil {
+		return false, nil, errors.New("tx not submitted to L1")
+	}
+
 	l1BatchNumber := new(big.Int)
 	l1BatchNumber.SetString(r["l1BatchNumber"].(string)[2:], 16)
 	l1BatchTxIndex := new(big.Int)
 	l1BatchTxIndex.SetString(r["l1BatchTxIndex"].(string)[2:], 16)
 	proofId := big.NewInt(int64(proofRes["id"].(float64)))
-	l2ChainId, err := clientL2.ChainID(context.Background())
-	if err != nil {
-		return false, nil, err
-	}
-
-	isFinalized, err := contactL1.IsWithdrawalFinalized(nil, l2ChainId, l1BatchNumber, proofId)
-	if err != nil {
-		return false, nil, err
-	}
-
-	if isFinalized {
-		return true, nil, nil
-	}
-
 	paths := [][32]byte{}
 	temp := [32]byte{}
 	for _, v := range proofRes["proof"].([]interface{}) {
@@ -427,6 +516,7 @@ func checkTxReadyToFinalized(clientL2 *ethclient.Client, contactL1 *l2.L1, txHas
 		L2TxNumberInBatch: uint16(l1BatchTxIndex.Uint64()),
 		Message:           messageData,
 		Paths:             paths,
+		Sender:            common.HexToAddress(logRes2.Topics[1].String()),
 	}
 
 	return false, proof, nil
