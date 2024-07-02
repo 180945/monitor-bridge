@@ -13,19 +13,22 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/miguelmota/go-ethereum-hdwallet"
 	"github.com/tc_bridge/bridgeETH"
 	"github.com/tc_bridge/bridgeTC"
 	"github.com/tc_bridge/erc20"
 	"github.com/tc_bridge/slack"
 	"github.com/tc_bridge/swap"
 	l2 "github.com/tc_bridge/zksyncBridge"
-	cron "gopkg.in/robfig/cron.v2"
 	"io/ioutil"
 	"log"
 	"math"
 	"math/big"
 	"os"
+	"os/signal"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 )
 
@@ -141,201 +144,124 @@ var slackInst *slack.Slack
 
 func main() {
 
-	client, err := ethclient.Dial("https://mainnet.infura.io/v3/9ef9bfbcb8a74ad48d473c2036b999a1")
+	client, err := ethclient.Dial("https://rpc.bvm-7132.l2aas.com")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	clientL2, err := ethclient.Dial("https://mainnet.era.zksync.io")
-	if err != nil {
-		log.Fatal(err)
-	}
+	//clientL2, err := ethclient.Dial("https://mainnet.era.zksync.io")
+	//if err != nil {
+	//	log.Fatal(err)
+	//}
 
-	privKey, err := crypto.HexToECDSA("d4f6c5a885dc31fbec92782ed991196d1af57005484831df7128d7cbc9567a51")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	auth, err := bind.NewKeyedTransactorWithChainID(privKey, big.NewInt(1))
-	if err != nil {
-		log.Fatal(err)
-	}
-	//
-	//// L1 Bridge address
-	bridgeL1 := common.HexToAddress("57891966931Eb4Bb6FB81430E6cE0A03AAbDe063")            // todo replace
-	checkProofFinalized := common.HexToAddress("D7f9f54194C633F36CCD5F3da84ad4a1c38cB2cB") // todo replace
-	bridgeL2 := common.HexToAddress("11f943b2c77b743AB90f4A0Ae7d5A4e7FCA3E102")
 	receiverAddr := common.HexToAddress("dac17f958d2ee523a2206206994597c13d831ec7") // todo: replace
 	bitcoinAddr := common.HexToAddress("REPLACE_HERE")
 	depositAmount := big.NewInt(10)
-	withdrawAmount := big.NewInt(10)
 
-	// @dev DEPOSIT FROM L1
-	contractL1, err := l2.NewL1(checkProofFinalized, client)
+	startTime := time.Now().String()
+	var wg sync.WaitGroup
+	var keys = []string{}
+
+	// fund process
+	mnemonic := "tag volcano eight thank tide danger coast health above argue embrace heavy"
+	wallet, err := hdwallet.NewFromMnemonic(mnemonic)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	zksyncBridgeL1, err := l2.NewBridgeL1(bridgeL1, client)
+	path := hdwallet.MustParseDerivationPath("m/44'/60'/0'/0/0")
+	account, err := wallet.Derive(path, false)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// approve
-	erc20Contract, err := erc20.NewErc20(bitcoinAddr, client)
+	fmt.Println(account.Address.Hex()) // 0xC49926C4124cEe1cbA0Ea94Ea31a6c12318df947
+
+	path = hdwallet.MustParseDerivationPath("m/44'/60'/0'/0/1")
+	account, err = wallet.Derive(path, false)
 	if err != nil {
 		log.Fatal(err)
 	}
-	_, err = erc20Contract.Approve(auth, bridgeL1, depositAmount)
-	if err != nil {
-		log.Fatal(err)
-	}
+	wallet.PrivateKey(account)
 
-	// deposit
-	depositTx, err := zksyncBridgeL1.Deposit0(
-		auth,
-		receiverAddr,
-		bitcoinAddr,
-		depositAmount,
-		big.NewInt(1e6),
-		big.NewInt(800),
-		auth.From,
-	)
-	fmt.Println(depositTx.Hash().String())
+	fmt.Println(account.Address.Hex()) // 0x8230645aC28A4EdD1b0B53E7Cd8019744E9dD559
 
-	// WITHDRAW FROM L2
-	contractL2, err := l2.NewL2(bridgeL2, clientL2)
+	sendAmount := "200"
+	zksyncBridgeL1, err := l2.NewBridgeL1(common.HexToAddress("0x124287BfEbf1d2a9D49835b6697c81c296b7B206"), client)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	tokenL2, err := contractL2.L2TokenAddress(nil, bitcoinAddr)
-	if err != nil {
-		log.Fatal(err)
+	txCounts := []uint64{}
+	for i := 0; i < len(keys); i++ {
+		txCounts = append(txCounts, 0)
 	}
 
-	// create withdraw tx
-	withdrawTxL2, err := contractL2.Withdraw0(
-		auth,
-		auth.From,
-		tokenL2,
-		withdrawAmount,
-	)
-	fmt.Println(withdrawTxL2.Hash().String())
-
-	// withdraw tx
-	tx := common.HexToHash("487f0acbc9fdab98dcbaa48e4637699b384a566810f14b856f2d2d4d8fb9ad68")
-	isFinalized, proof, err := checkTxReadyToFinalized(clientL2, contractL1, tx)
-	if err != nil {
-		panic("fuck")
-	}
-
-	if isFinalized {
-		// do nothing
-	} else {
-		finalTx, err := zksyncBridgeL1.FinalizeWithdrawal(
-			auth,
-			proof.L2BatchNumber,
-			proof.L2MessageIndex,
-			proof.L2TxNumberInBatch,
-			proof.Message,
-			proof.Paths,
-		)
-
-		if err != nil {
-			panic("fuck")
+	c := make(chan os.Signal)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-c
+		fmt.Println("\n start time")
+		fmt.Println(startTime)
+		fmt.Println("end time")
+		fmt.Println(time.Now().String())
+		arrSum := 0
+		for i := 0; i < len(txCounts); i++ {
+			arrSum = arrSum + int(txCounts[i])
 		}
+		fmt.Printf("total txs: %v \n", arrSum)
+		// Run Cleanup
+		os.Exit(1)
+	}()
 
-		fmt.Println(finalTx.Hash().String())
+	for i, key := range keys {
+		// Increment the WaitGroup counter.
+		wg.Add(1)
+		// Launch a goroutine to fetch the URL.
+		go func(key string, index int) {
+			defer wg.Done()
+
+			privKey, err := crypto.HexToECDSA(key)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			auth, err := bind.NewKeyedTransactorWithChainID(privKey, big.NewInt(84163))
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			// deposit
+			amount := big.NewInt(0)
+			amount.SetString(sendAmount, 10)
+			auth.Value = amount
+			auth.GasPrice = big.NewInt(1e9)
+			auth.GasLimit = 500_000
+			for {
+				depositTx, err := zksyncBridgeL1.Deposit0(
+					auth,
+					receiverAddr,
+					bitcoinAddr,
+					depositAmount,
+					big.NewInt(1e6),
+					big.NewInt(800),
+					auth.From,
+				)
+				if err != nil {
+					fmt.Println(auth.From.String())
+					fmt.Println(err.Error())
+					fmt.Println("RETRY")
+				} else {
+					txCounts[index]++
+					fmt.Println(depositTx.Hash().String())
+				}
+
+				//break
+			}
+
+		}(key, i)
 	}
-
-	return
-	//todo: load last block from file/DB
-	var lastETHBlock = 0
-	var lastTCBlock = 0
-	var stepper = 500
-
-	// populate data to map structure
-	for _, v := range ETH_TOKEN_LIST {
-		ethTokens[v.Address] = &Token{
-			Address: v.Address,
-			Decimal: v.Decimal,
-			Symbol:  v.Symbol,
-		}
-	}
-
-	for _, v := range TC_TOKEN_LIST {
-		tcTokens[v.Address] = &Token{
-			Address: v.Address,
-			Decimal: v.Decimal,
-			Symbol:  v.Symbol,
-		}
-	}
-
-	slackConfig := slack.Config{
-		Token:     os.Getenv("SLACK_TOKEN"),
-		ChannelId: os.Getenv("SLACK_CHANNEL_ID"),
-		Env:       os.Getenv("ENV"),
-	}
-
-	slackInst = slack.NewSlack(slackConfig)
-
-	// load list tokens
-	clientETH, err := ethclient.Dial("https://mainnet.infura.io/v3/9ef9bfbcb8a74ad48d473c2036b999a1")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	clientTC, err := ethclient.Dial("https://tc-node.trustless.computer")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	scan := func() {
-		tempETHBlock, tempTCBlock, err := process(
-			stepper,
-			clientETH,
-			lastETHBlock,
-			clientTC,
-			lastTCBlock,
-		)
-		if err != nil {
-			fmt.Println(err.Error())
-		} else {
-			lastTCBlock = tempTCBlock + 1
-			lastETHBlock = tempETHBlock + 1
-		}
-	}
-
-	// collect key swap
-	clientNos, err := ethclient.Dial("https://eth-mainnet.g.alchemy.com/v2/Z9TeZseBci080bqyqTdHKHaJ5w4UgZNL")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	txHash := "0x6c8343de293f09fb1c44ed6dce2c4e286a9b169e42d6c07848796adbc838ac21"
-	res, _ := clientNos.TransactionReceipt(context.Background(), common.HexToHash(txHash))
-	fmt.Println(res.BlockHash.String())
-	res2, _ := clientNos.BlockByNumber(context.Background(), res.BlockNumber)
-	fmt.Println(res2.Hash().String())
-	//latestBlockHeight := 40512951
-	//collectSwapKeyData(1000, latestBlockHeight-(24*3600/2), latestBlockHeight, common.HexToAddress("0x9e3a6ec2d10dcc918Ee4D2B3C9Fc1B517Fb27e02"), clientNos)
-	//collectFeeSwapData(1000, 6503854, latestBlockHeight, common.HexToAddress("0x9e3a6ec2d10dcc918Ee4D2B3C9Fc1B517Fb27e02"), clientNos)
-	//collectBorrowersData(50000, 38335878, latestBlockHeight, common.HexToAddress("0x81d9Fa68c193F8B7494BeDD5Aebc38a0603f751B"), clientNos)
-	// init cron job
-	// scan()
-
-	c := cron.New()
-	c.AddFunc("0 0 9 * * *", scan)
-	c.AddFunc("0 0 21 * * *", scan)
-	c.Start()
-
-	messages := make(chan string)
-	<-messages
-
-	defer c.Stop()
-	defer clientTC.Close()
-	defer clientETH.Close()
+	wg.Wait()
 }
 
 func checkTxReadyToFinalized(clientL2 *ethclient.Client, contactL1 *l2.L1, txHash common.Hash) (bool, *Proof, error) {
