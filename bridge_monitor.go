@@ -227,7 +227,13 @@ func main() {
 	{
 		// @notice deposit native token
 		bridgeAmount := big.NewInt(10000000000)
-		auth.Value = bridgeAmount
+
+		auth.GasPrice = big.NewInt(1e18)
+		baseCost, err := zksyncBridgeL1Native.L2TransactionBaseCost(nil, auth.GasPrice, big.NewInt(1e6), big.NewInt(800))
+		if err != nil {
+			log.Fatal(err)
+		}
+		auth.Value = big.NewInt(0).Add(bridgeAmount, baseCost)
 
 		depositTx, err := zksyncBridgeL1Native.RequestL2Transaction(
 			auth,
